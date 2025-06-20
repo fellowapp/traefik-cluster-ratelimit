@@ -154,6 +154,48 @@ http:
 
 This configuration will limit requests based on the value of the Authorization header while keeping the tokens secure in Redis.
 
+## Redis Memory Management
+
+The rate limiter automatically sets expiration times (TTL) on all Redis keys it creates:
+
+- Each rate limit key is set with a TTL equal to the token bucket's reset time
+- The TTL is dynamically calculated based on your configured `rate`, `burst`, and `period` settings
+- When requests stop coming from a source, its corresponding keys automatically expire
+- No manual cleanup is required, preventing Redis memory leaks
+
+### How the TTL is Calculated
+
+The plugin implements the [Token Bucket Algorithm](https://en.wikipedia.org/wiki/Token_bucket) where:
+
+1. Each source (IP/header) has its own "bucket" with tokens representing available requests
+2. The TTL is tied to the "Theoretical Arrival Time" (TAT) - the time when the bucket will be fully replenished
+3. The formula is essentially: `TTL = new_tat - current_time`
+
+For example:
+
+- With `average: 10, period: 1, burst: 20`: A source that consumes all 20 burst tokens will have a key with TTL of approximately 2 seconds (time to refill from 0 to 20 at 10 tokens/second)
+- With `average: 30, period: 60, burst: 60`: A source consuming all tokens would get a TTL of about 120 seconds (time to refill at 0.5 tokens/second)
+
+### Memory Implications
+
+This TTL mechanism has several advantages:
+
+- **Automatic Cleanup**: Inactive sources naturally disappear from Redis after their TTL expires
+- **Bounded Memory Usage**: Redis memory grows proportionally to active users, not historical users
+- **Self-Regulating**: Higher rate limits create longer-lived keys, and vice versa
+- **Time-Appropriate Storage**: The more aggressively a client consumes their rate limit, the longer their key persists
+
+Under the hood, the Lua script handles the TTL setting:
+
+```lua
+local reset_after = new_tat - now
+if reset_after > 0 then
+  redis.call("SET", rate_limit_key, new_tat, "EX", math.ceil(reset_after))
+end
+```
+
+When the key expires, it does so naturally through Redis's expiration mechanism without requiring additional cleanup operations.
+
 ## Circuit-breaker
 
 If the Redis server is not available, we will stop talking to it, and let pass through.

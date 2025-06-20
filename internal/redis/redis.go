@@ -47,6 +47,7 @@ func NewClient(addr string, db uint, authpassword string, connectionTimeout time
 		dialTimeout:       connectionTimeout * 2,
 		auth:              authpassword,
 		connectionTimeout: connectionTimeout,
+		db:                int(db),
 	}
 
 	// Prepopulate the pool with connections

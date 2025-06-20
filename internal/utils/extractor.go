@@ -52,6 +52,9 @@ type SourceCriterion struct {
 	RequestHeaderName string `json:"requestHeaderName,omitempty" toml:"requestHeaderName,omitempty" yaml:"requestHeaderName,omitempty" export:"true"`
 	// RequestHost defines whether to consider the request Host as the source.
 	RequestHost bool `json:"requestHost,omitempty" toml:"requestHost,omitempty" yaml:"requestHost,omitempty" export:"true"`
+	// Secure defines whether to hash the source value for security with sensitive data (like auth tokens).
+	// Defaults to true.
+	Secure *bool `json:"secure,omitempty" toml:"secure,omitempty" yaml:"secure,omitempty" export:"true"`
 }
 
 // GetSourceExtractor returns the SourceExtractor function corresponding to the given sourceMatcher.
@@ -93,12 +96,16 @@ func GetSourceExtractor(sourceMatcher *SourceCriterion) (SourceExtractor, error)
 
 	if sourceMatcher.RequestHeaderName != "" {
 		//logger.Debug().Msg("Using RequestHeaderName")
-		return NewExtractor(fmt.Sprintf("request.header.%s", sourceMatcher.RequestHeaderName))
+		secure := true
+		if sourceMatcher.Secure != nil {
+			secure = *sourceMatcher.Secure
+		}
+		return NewExtractor(fmt.Sprintf("request.header.%s", sourceMatcher.RequestHeaderName), secure)
 	}
 
 	if sourceMatcher.RequestHost {
 		//logger.Debug().Msg("Using RequestHost")
-		return NewExtractor("request.host")
+		return NewExtractor("request.host", false)
 	}
 
 	return nil, errors.New("no SourceCriterion criterion defined")

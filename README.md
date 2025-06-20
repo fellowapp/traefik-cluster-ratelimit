@@ -101,6 +101,7 @@ The `average` and the `burst` are the number of allowed connection per second, t
 | sourceCriterion.ipStrategy.excludedIPs | list of X-Forwarded-For IPs that are to be excluded | |
 | sourceCriterion.requestHost | based source on request host                       |            |
 | sourceCriterion.requestHeaderName | Name of the header used to group incoming requests|       |
+| sourceCriterion.secure | Whether to securely hash header values (e.g., for authorization tokens). This only applies to uses of sourceCriterion.requestHeaderName | true      |
 | breakerThreshold            | number of failed connection before pausing Redis   | 3          |
 | breakerReattempt            | nb seconds before attempting to reconnect to Redis | 15         |
 | redisConnectionTimeout      | redis connection timeout (in seconds)              | 2          |
@@ -133,6 +134,25 @@ http:
           redisPassword: $REDIS_AUTH_PASSWORD
           redisConnectionTimeout: 2
 ```
+
+## Using Authorization Headers for Rate Limiting
+
+When rate limiting by sensitive headers like Authorization, the `sourceCriterion.secure` option ensures that the actual token values are never stored in Redis as plain text. Instead, they are securely hashed using SHA-256:
+
+```yml
+http:
+  middlewares:
+    auth-rate-limiter:
+      plugin:
+        clusterRatelimit:
+          average: 10
+          burst: 20
+          sourceCriterion:
+            requestHeaderName: "Authorization" 
+            secure: true  # Default is true, but shown here for clarity
+```
+
+This configuration will limit requests based on the value of the Authorization header while keeping the tokens secure in Redis.
 
 ## Circuit-breaker
 

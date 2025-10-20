@@ -49,9 +49,17 @@ type Config struct {
 	// ConnectionTimeout is the read and write connection timeout to redis.
 	// By default it is 2 seconds
 	RedisConnectionTimeout int64 `json:"redisConnectionTimeout,omitempty" yaml:"redisConnectionTimeout,omitempty"`
-	// WhitelistedIPs is a list of IPs (or CIDR ranges) that should bypass rate limiting.
-	// Requests from these IPs will not be rate limited.
-	WhitelistedIPs []string `json:"whitelistedIPs,omitempty" yaml:"whitelistedIPs,omitempty"`
+	// Whitelist defines IP-based whitelisting to bypass rate limiting.
+	Whitelist *WhitelistConfig `json:"whitelist,omitempty" yaml:"whitelist,omitempty"`
+}
+
+// WhitelistConfig holds the whitelist configuration.
+type WhitelistConfig struct {
+	// IPs is a list of IPs (or CIDR ranges) that should bypass rate limiting.
+	IPs []string `json:"ips,omitempty" yaml:"ips,omitempty"`
+	// IPStrategy defines how to extract the client IP for whitelist checking.
+	// If not specified, uses RemoteAddr strategy.
+	IPStrategy *utils.IPStrategy `json:"ipStrategy,omitempty" yaml:"ipStrategy,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -60,14 +68,15 @@ func CreateConfig() *Config {
 }
 
 type ClusterRateLimit struct {
-	next             http.Handler
-	limiter          *Limiter
-	name             string
-	average          int64
-	burst            int64
-	period           int64
-	sourceMatcher    utils.SourceExtractor
-	whitelistChecker *ip.Checker
+	next              http.Handler
+	limiter           *Limiter
+	name              string
+	average           int64
+	burst             int64
+	period            int64
+	sourceMatcher     utils.SourceExtractor
+	whitelistChecker  *ip.Checker
+	whitelistStrategy ip.Strategy
 }
 
 // New created a new ClusterRateLimit plugin.
@@ -105,12 +114,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, err
 	}
 
-	// Initialize whitelist checker if whitelisted IPs are configured
+	// Initialize whitelist checker and strategy if configured
 	var whitelistChecker *ip.Checker
-	if len(config.WhitelistedIPs) > 0 {
-		whitelistChecker, err = ip.NewChecker(config.WhitelistedIPs)
+	var whitelistStrategy ip.Strategy
+	if config.Whitelist != nil && len(config.Whitelist.IPs) > 0 {
+		whitelistChecker, err = ip.NewChecker(config.Whitelist.IPs)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create whitelist IP checker: %v", err)
+		}
+
+		// Get the IP strategy for whitelist checking
+		whitelistStrategy, err = config.Whitelist.IPStrategy.Get()
+		if err != nil {
+			return nil, fmt.Errorf("unable to create whitelist IP strategy: %v", err)
 		}
 	}
 
@@ -130,14 +146,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// }
 
 	return &ClusterRateLimit{
-		next:             next,
-		limiter:          NewLimiter(client, name, config.BreakerThreshold, config.BreakerReattempt),
-		name:             name,
-		average:          config.Average,
-		burst:            config.Burst,
-		period:           config.Period,
-		sourceMatcher:    sourceMatcher,
-		whitelistChecker: whitelistChecker,
+		next:              next,
+		limiter:           NewLimiter(client, name, config.BreakerThreshold, config.BreakerReattempt),
+		name:              name,
+		average:           config.Average,
+		burst:             config.Burst,
+		period:            config.Period,
+		sourceMatcher:     sourceMatcher,
+		whitelistChecker:  whitelistChecker,
+		whitelistStrategy: whitelistStrategy,
 	}, nil
 }
 
@@ -145,11 +162,9 @@ func (rl *ClusterRateLimit) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 	// cf https://medium.com/@bingolbalihasan/redis-rate-limiting-in-go-d342bab3d930
 
 	// Check if the client IP is whitelisted - if so, bypass rate limiting
-	if rl.whitelistChecker != nil {
-		// Use RemoteAddrStrategy to get the actual client IP for whitelist checking
-		remoteAddrStrategy := &ip.RemoteAddrStrategy{}
-		clientIP := remoteAddrStrategy.GetIP(req)
-		
+	if rl.whitelistChecker != nil && rl.whitelistStrategy != nil {
+		// Use the configured whitelist IP extraction strategy
+		clientIP := rl.whitelistStrategy.GetIP(req)
 		if clientIP != "" {
 			if err := rl.whitelistChecker.IsAuthorized(clientIP); err == nil {
 				// IP is whitelisted, bypass rate limiting

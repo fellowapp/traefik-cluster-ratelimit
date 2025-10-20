@@ -92,7 +92,9 @@ The `average` and the `burst` are the number of allowed connection per second, t
 | period                      | the period (in seconds) of the rate limiter window | 1          |
 | average                     | allowed requests per "period" ( 0 = unlimited)     |            |
 | burst                       | allowed burst requests per "period"                |            |
-| whitelistedIPs              | list of IPs (or CIDR ranges) that bypass rate limiting |        |
+| whitelist.ips               | list of IPs (or CIDR ranges) that bypass rate limiting |        |
+| whitelist.ipStrategy.depth  | depth in X-Forwarded-For for whitelist IP extraction |          |
+| whitelist.ipStrategy.excludedIPs | IPs to skip when extracting whitelist IP from X-Forwarded-For | |
 | redisAddress                | address of the redis server                        | redis:6379 |
 | redisDb                     | redis db to use                                    | 0          |
 | redisPassword               | redis authentication (if any)                      |            |
@@ -110,7 +112,8 @@ The `average` and the `burst` are the number of allowed connection per second, t
 Notes:
 - for more information about sourceCriteron check the Traefik [ratelimit](https://doc.traefik.io/traefik/middlewares/http/ratelimit/) page
 - regarding redispassword, if you dont want to set it in clear text in the traefik configuration, you can specify a variable name starting with '$'. For example `$REDIS_PASSWORD` will use the `REDIS_PASSWORD` environment variable
-- `whitelistedIPs` accepts both individual IPs (`192.168.1.5`) and CIDR ranges (`10.0.0.0/8`). Requests from whitelisted IPs bypass rate limiting entirely
+- `whitelist.ips` accepts both individual IPs (`192.168.1.5`) and CIDR ranges (`10.0.0.0/8`). Requests from whitelisted IPs bypass rate limiting entirely
+- `whitelist.ipStrategy` is independent from `sourceCriterion.ipStrategy` - configure it based on your proxy setup for whitelist checking. If not specified, uses `RemoteAddr` (direct connection IP)
 
 A full example would be
 
@@ -126,9 +129,13 @@ http:
           average: 5
           burst: 10
           period: 10
-          whitelistedIPs:
-          - 192.168.1.100
-          - 10.0.0.0/8
+          whitelist:
+            ips:
+            - 192.168.1.100
+            - 10.0.0.0/8
+            ipStrategy:
+              excludedIPs:
+              - 172.16.0.0/12  # Skip internal load balancers
           sourceCriterion:
             ipStrategy:
               depth: 2

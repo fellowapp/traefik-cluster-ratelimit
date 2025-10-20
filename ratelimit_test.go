@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fellowapp/traefik-cluster-ratelimit/internal/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,11 +102,16 @@ func TestWhitelistedIPs(t *testing.T) {
 
 			// Create config with whitelisted IPs and a very restrictive rate limit
 			config := &Config{
-				Average:        1,  // Very low rate to ensure non-whitelisted would be blocked
-				Burst:          1,
-				Period:         1,
-				WhitelistedIPs: test.whitelistedIPs,
-				RedisAddress:   "localhost:6379", // This won't actually connect in unit tests
+				Average:      1, // Very low rate to ensure non-whitelisted would be blocked
+				Burst:        1,
+				Period:       1,
+				RedisAddress: "localhost:6379", // This won't actually connect in unit tests
+			}
+			
+			if test.whitelistedIPs != nil {
+				config.Whitelist = &WhitelistConfig{
+					IPs: test.whitelistedIPs,
+				}
 			}
 
 			handler, err := New(context.Background(), next, config, "test-whitelist")
@@ -178,11 +184,13 @@ func TestWhitelistedIPsInvalidConfig(t *testing.T) {
 			})
 
 			config := &Config{
-				Average:        10,
-				Burst:          20,
-				Period:         1,
-				WhitelistedIPs: test.whitelistedIPs,
-				RedisAddress:   "localhost:6379",
+				Average:      10,
+				Burst:        20,
+				Period:       1,
+				RedisAddress: "localhost:6379",
+				Whitelist: &WhitelistConfig{
+					IPs: test.whitelistedIPs,
+				},
 			}
 
 			_, err := New(context.Background(), next, config, "test-invalid")
@@ -205,11 +213,13 @@ func TestWhitelistedIPsWithUnlimitedRate(t *testing.T) {
 	})
 
 	config := &Config{
-		Average:        0, // Unlimited
-		Burst:          1,
-		Period:         1,
-		WhitelistedIPs: []string{"192.168.1.100"},
-		RedisAddress:   "localhost:6379",
+		Average:      0, // Unlimited
+		Burst:        1,
+		Period:       1,
+		RedisAddress: "localhost:6379",
+		Whitelist: &WhitelistConfig{
+			IPs: []string{"192.168.1.100"},
+		},
 	}
 
 	handler, err := New(context.Background(), next, config, "test-unlimited")
@@ -222,6 +232,44 @@ func TestWhitelistedIPsWithUnlimitedRate(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.True(t, nextCalled, "Next handler should have been called")
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestWhitelistWithCustomIPStrategy(t *testing.T) {
+	// Test that whitelist uses its own IP strategy with excludedIPs
+	nextCalled := false
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		nextCalled = true
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	config := &Config{
+		Average:      10,
+		Burst:        20,
+		Period:       1,
+		RedisAddress: "localhost:6379",
+		Whitelist: &WhitelistConfig{
+			IPs: []string{"203.0.113.50"}, // External client IP
+			IPStrategy: &utils.IPStrategy{
+				ExcludedIPs: []string{"10.0.0.0/8"}, // Skip internal load balancer
+			},
+		},
+	}
+
+	handler, err := New(context.Background(), next, config, "test-custom-strategy")
+	require.NoError(t, err)
+
+	// Simulate request from load balancer (10.0.0.5) forwarding for external client (203.0.113.50)
+	req := httptest.NewRequest("GET", "http://example.com/foo", nil)
+	req.RemoteAddr = "10.0.0.5:12345" // Load balancer IP
+	req.Header.Set("X-Forwarded-For", "203.0.113.50, 10.0.0.5")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should bypass rate limiting because 203.0.113.50 is whitelisted
+	// and the IP strategy correctly extracts it by skipping 10.0.0.0/8
+	assert.True(t, nextCalled, "Next handler should have been called for whitelisted external IP")
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
 

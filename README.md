@@ -92,6 +92,8 @@ The `average` and the `burst` are the number of allowed connection per second, t
 | period                      | the period (in seconds) of the rate limiter window | 1          |
 | average                     | allowed requests per "period" ( 0 = unlimited)     |            |
 | burst                       | allowed burst requests per "period"                |            |
+| auth.requiredHeaders        | list of header names that must be present          |            |
+| auth.wwwAuthenticateRealm   | realm value for WWW-Authenticate header            | Restricted |
 | whitelist.ips               | list of IPs (or CIDR ranges) that bypass rate limiting |        |
 | whitelist.ipStrategy.depth  | depth in X-Forwarded-For for whitelist IP extraction |          |
 | whitelist.ipStrategy.excludedIPs | IPs to skip when extracting whitelist IP from X-Forwarded-For | |
@@ -114,6 +116,71 @@ Notes:
 - regarding redispassword, if you dont want to set it in clear text in the traefik configuration, you can specify a variable name starting with '$'. For example `$REDIS_PASSWORD` will use the `REDIS_PASSWORD` environment variable
 - `whitelist.ips` accepts both individual IPs (`192.168.1.5`) and CIDR ranges (`10.0.0.0/8`). Requests from whitelisted IPs bypass rate limiting entirely
 - `whitelist.ipStrategy` is independent from `sourceCriterion.ipStrategy` - configure it based on your proxy setup for whitelist checking. If not specified, uses `RemoteAddr` (direct connection IP)
+
+## Header-Based Authentication
+
+The plugin can enforce required authentication headers before applying rate limiting. If any required header is missing, the request returns `401 Unauthorized` with a proper `WWW-Authenticate` header, without consuming rate limit tokens.
+
+**Important**: Authentication is checked even for whitelisted IPs. Whitelisted IPs only bypass rate limiting, not authentication.
+
+### Configuration
+
+```yml
+http:
+  middlewares:
+    auth-protected:
+      plugin:
+        clusterRatelimit:
+          average: 100
+          burst: 200
+          auth:
+            requiredHeaders:
+              - "Authorization"
+            wwwAuthenticateRealm: "API Access"
+          redisAddress: redis:6379
+```
+
+### Behavior
+
+- **Early Check**: Authentication is checked FIRST, before whitelist and rate limiting
+- **All Required**: All headers in `requiredHeaders` must be present (non-empty)
+- **401 Response**: Missing headers return 401 with `WWW-Authenticate: Bearer realm="..."` header
+- **No Rate Limit Impact**: Failed auth does not consume rate limit tokens
+- **Enforced for Whitelisted IPs**: Even whitelisted IPs must have required headers
+- **Optional Feature**: Omit `auth` configuration to disable (backward compatible)
+- **Presence Check Only**: Only checks header presence, not value validation
+
+### Examples
+
+**Single header authentication:**
+```yml
+auth:
+  requiredHeaders:
+    - "Authorization"
+```
+
+**Multiple required headers:**
+```yml
+auth:
+  requiredHeaders:
+    - "Authorization"
+    - "X-API-Key"
+    - "X-Tenant-ID"
+  wwwAuthenticateRealm: "Multi-Tenant API"
+```
+
+**Combined with IP whitelisting:**
+```yml
+# Require Authorization header even for whitelisted IPs
+auth:
+  requiredHeaders:
+    - "Authorization"
+whitelist:
+  ips:
+    - "10.0.0.0/8"
+```
+
+**Note**: This only checks for header *presence*, not validation. For value validation (JWT verification, API key lookup), use this in combination with Traefik's ForwardAuth middleware or implement validation in your backend service.
 
 A full example would be
 
@@ -160,7 +227,7 @@ http:
           average: 10
           burst: 20
           sourceCriterion:
-            requestHeaderName: "Authorization" 
+            requestHeaderName: "Authorization"
             secure: true  # Default is true, but shown here for clarity
 ```
 

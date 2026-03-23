@@ -51,6 +51,9 @@ type Config struct {
 	RedisConnectionTimeout int64 `json:"redisConnectionTimeout,omitempty" yaml:"redisConnectionTimeout,omitempty"`
 	// Whitelist defines IP-based whitelisting to bypass rate limiting.
 	Whitelist *WhitelistConfig `json:"whitelist,omitempty" yaml:"whitelist,omitempty"`
+	// Auth defines required header authentication to enforce before rate limiting.
+	// If specified, requests missing any required header will receive 401 Unauthorized.
+	Auth *AuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 }
 
 // WhitelistConfig holds the whitelist configuration.
@@ -60,6 +63,19 @@ type WhitelistConfig struct {
 	// IPStrategy defines how to extract the client IP for whitelist checking.
 	// If not specified, uses RemoteAddr strategy.
 	IPStrategy *utils.IPStrategy `json:"ipStrategy,omitempty" yaml:"ipStrategy,omitempty"`
+}
+
+// AuthConfig holds the authentication configuration.
+type AuthConfig struct {
+	// RequiredHeaders is a list of header names that must be present in the request.
+	// All listed headers must be present for the request to proceed.
+	// Example: ["Authorization", "X-API-Key"]
+	RequiredHeaders []string `json:"requiredHeaders,omitempty" yaml:"requiredHeaders,omitempty"`
+
+	// WWWAuthenticateRealm is the realm value to include in the WWW-Authenticate response header
+	// when a required header is missing. Defaults to "Restricted" if not specified.
+	// Example: "API Access"
+	WWWAuthenticateRealm string `json:"wwwAuthenticateRealm,omitempty" yaml:"wwwAuthenticateRealm,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -77,6 +93,7 @@ type ClusterRateLimit struct {
 	sourceMatcher     utils.SourceExtractor
 	whitelistChecker  *ip.Checker
 	whitelistStrategy ip.Strategy
+	authConfig        *AuthConfig
 }
 
 // New created a new ClusterRateLimit plugin.
@@ -155,11 +172,28 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		sourceMatcher:     sourceMatcher,
 		whitelistChecker:  whitelistChecker,
 		whitelistStrategy: whitelistStrategy,
+		authConfig:        config.Auth,
 	}, nil
 }
 
 func (rl *ClusterRateLimit) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// cf https://medium.com/@bingolbalihasan/redis-rate-limiting-in-go-d342bab3d930
+
+	// Check required authentication headers FIRST
+	// This happens even for whitelisted IPs (per user requirement)
+	if rl.authConfig != nil && len(rl.authConfig.RequiredHeaders) > 0 {
+		for _, headerName := range rl.authConfig.RequiredHeaders {
+			if req.Header.Get(headerName) == "" {
+				realm := rl.authConfig.WWWAuthenticateRealm
+				if realm == "" {
+					realm = "Restricted"
+				}
+				rw.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", realm))
+				http.Error(rw, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+	}
 
 	// Check if the client IP is whitelisted - if so, bypass rate limiting
 	if rl.whitelistChecker != nil && rl.whitelistStrategy != nil {
